@@ -23,8 +23,8 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     census: Map[Name, Count],
     aSubst: Subst[Atom] = emptySubst,
     cSubst: Subst[Name] = emptySubst,
-    eInvEnv: Map[(ValuePrimitive, Seq[Atom]), Atom] = Map.empty,
-    cEnv: Map[Name, Cnt] = Map.empty,
+    eInvEnv: Map[(ValuePrimitive, Seq[Atom]), Atom] = Map.empty, // for rewriting
+    cEnv: Map[Name, Cnt] = Map.empty, // for inlining
     fEnv: Map[Name, Fun] = Map.empty) {
 
     def dead(s: Name): Boolean =
@@ -32,17 +32,17 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     def appliedOnce(s: Name): Boolean =
       census.get(s).contains(Count(applied = 1))
 
-    def hasFun(fun: Name, actualArgs: Seq[Atom]): Boolean =
+    def hasFun(fun: Name, actualArgs: Seq[Atom]): Boolean =  // to check if inlining is possible
       fEnv.get(fun).exists(_.args.length == actualArgs.length)
     def hasCnt(cnt: Name, actualArgs: Seq[Atom]): Boolean =
       cEnv.get(cnt).exists(_.args.length == actualArgs.length)
 
-    def withASubst(from: Atom, to: Atom): State =
+    def withASubst(from: Atom, to: Atom): State =  // augment atom substitution
       copy(aSubst = aSubst + (from -> aSubst(to)))
     def withASubst(from: Seq[Name], to: Seq[Atom]): State =
       copy(aSubst = aSubst ++ (from zip to.map(aSubst)))
 
-    def withCSubst(from: Name, to: Name): State =
+    def withCSubst(from: Name, to: Name): State =  // augment continuation substitution
       copy(cSubst = cSubst + (from -> cSubst(to)))
 
     def withExp(atom: Atom, prim: ValuePrimitive, args: Seq[Atom]): State =
@@ -66,9 +66,10 @@ abstract class CPSOptimizer[T <: SymbolicNames]
   private def shrink(tree: Tree): Tree =
     shrink(tree, State(census(tree)))
 
-  private def shrink(tree: Tree, s: State): Tree = ???
+  private def shrink(tree: Tree, s: State): Tree = ???  // a single pattern match, don't modularize
 
   // (Non-shrinking) inlining
+  // need to duplicate(rename) names bound in the inlined function
 
   private def inline(tree: Tree, maxSize: Int): Tree = {
     def copyT(t: Tree, subV: Subst[Atom], subC: Subst[Name]): Tree = t match {
@@ -117,12 +118,12 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       val funLimit = fibonacci(i)
       val cntLimit = i
 
-      def inlineT(tree: Tree)(using s: State): Tree = ???
+      def inlineT(tree: Tree)(using s: State): Tree = ??? // create a stream of trees, the nth tree is the result of inlining functions of size <= fibonacci(n)
 
       (i + 1, fixedPoint(inlineT(tree)(using State(census(tree))))(shrink))
     }
 
-    trees.takeWhile{ (_, tree) => size(tree) <= maxSize }.last._2
+    trees.takeWhile{ (_, tree) => size(tree) <= maxSize }.last._2  // take the last tree that fits in maxSize
   }
 
   // Census computation
@@ -175,6 +176,8 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     case _: (AppF | AppC | If | Halt) => 1
   }
 
+  // up until this point, the code is common to both optimizers
+  // 
   protected val impure: ValuePrimitive => Boolean
   protected val unstable: ValuePrimitive => Boolean
 
@@ -189,7 +192,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
   protected val leftAbsorbing: Set[(Literal, ValuePrimitive)]
   protected val rightAbsorbing: Set[(ValuePrimitive, Literal)]
 
-  protected val sameArgReduce: PartialFunction[(ValuePrimitive, Atom), Atom]
+  protected val sameArgReduce: PartialFunction[(ValuePrimitive, Atom), Atom] 
   protected val sameArgReduceC: TestPrimitive => Boolean
 
   protected val vEvaluator: PartialFunction[(ValuePrimitive, Seq[Atom]),

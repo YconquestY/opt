@@ -10,8 +10,10 @@ object Main {
   def main(args: Array[String]): Unit = {
     val backEnd: Tree => TerminalPhaseResult = (
       CL3ToCPSTranslator
+        // add optimizer
         andThen CPSValueRepresenter
         andThen CPSHoister
+        // add optimizer
         andThen FlatCPSInterpreter
     )
 
