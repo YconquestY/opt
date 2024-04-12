@@ -10,25 +10,41 @@ abstract class CPSOptimizer[T <: SymbolicNames]
          TypeTest[treeModule.Atom, treeModule.Name],
          TypeTest[treeModule.Tree, treeModule.Body]) {
   import treeModule._
-
+  /** Entry point of abstract class */
   protected def rewrite(tree: Program): Tree = {
     val simplifiedTree = fixedPoint(tree)(shrink)
     val maxSize = size(simplifiedTree) * 3 / 2
-    fixedPoint(simplifiedTree, 8)(`inline`(_, maxSize))
+    fixedPoint(simplifiedTree, 8)(`inline`(_, maxSize)) // use backticks to `inline` method instead of keyword
   }
-
+  /** ???
+    * 
+    * For example, shrinking inlining requires 1 `applied` and 0 `asValue`.
+    * 
+    * @param applied how many times a function is applied
+    * @param asValue how many times a name is used as a value
+    */
   private case class Count(applied: Int = 0, asValue: Int = 0)
-
+  /** ???
+    *
+    * @param census  how many times a name is used
+    * @param aSubst  record of `Atom` substitutions
+    * @param cSubst  record of `Cnt`  substitutions
+    * @param eInvEnv for rewriting, e.g., CSE and absorbing elements
+    *      Pay attention to commutative operations.
+    * @param cEnv for continuation inlining
+    * @param fEnv for function inlining
+    */
   private case class State(
     census: Map[Name, Count],
     aSubst: Subst[Atom] = emptySubst,
     cSubst: Subst[Name] = emptySubst,
-    eInvEnv: Map[(ValuePrimitive, Seq[Atom]), Atom] = Map.empty, // for rewriting
+    eInvEnv: Map[(ValuePrimitive, Seq[Atom]), Atom] = Map.empty,
     cEnv: Map[Name, Cnt] = Map.empty, // for inlining
     fEnv: Map[Name, Fun] = Map.empty) {
-
+    /** DCE: verify a name is dead */
     def dead(s: Name): Boolean =
       ! census.contains(s)
+    /** Shrinking inlining: verify a function/continuation is applied exactly once */
     def appliedOnce(s: Name): Boolean =
       census.get(s).contains(Count(applied = 1))
 
@@ -66,12 +82,28 @@ abstract class CPSOptimizer[T <: SymbolicNames]
   private def shrink(tree: Tree): Tree =
     shrink(tree, State(census(tree)))
 
-  private def shrink(tree: Tree, s: State): Tree = ???  // a single pattern match, don't modularize
+  private def shrink(tree: Tree, s: State): Tree = tree match { // a single pattern match, don't modularize
+    // CSE
+    // commutative operations: +, *, &, |, and ^
+    // +
+    case LetP(name: Name, L3ValuePrimitive.IntAdd | , args: Seq[Name], body: Tree) = 
+      s.eInvEnv(L3.ValuePrimitive, args)
+    // side effect
+    // byte-read
+    // byte-write
+
+    // -
+    // ÷
+    // %
+    // <<
+    // >>
+  }
 
   // (Non-shrinking) inlining
   // need to duplicate(rename) names bound in the inlined function
 
   private def inline(tree: Tree, maxSize: Int): Tree = {
+    /** Copy a tree */
     def copyT(t: Tree, subV: Subst[Atom], subC: Subst[Name]): Tree = t match {
       case LetF(funs, body) =>
         val names = funs map (_.name)
@@ -96,7 +128,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       case Halt(arg) =>
         Halt(subV(arg))
     }
-
+    /** Copy a function */
     def copyF(fun: Fun, subV: Subst[Atom], subC: Subst[Name]): Fun = {
       val retC1 = fun.retC.copy()
       val subC1 = subC + (fun.retC -> retC1)
@@ -105,7 +137,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       val funName1 = subV(fun.name).asInstanceOf[Name]
       Fun(funName1, retC1, args1, copyT(fun.body, subV1, subC1))
     }
-
+    /** Copy a continuation */
     def copyC(cnt: Cnt, subV: Subst[Atom], subC: Subst[Name]): Cnt = {
       val args1 = cnt.args map (_.copy())
       val subV1 = subV ++ (cnt.args zip args1)
@@ -118,7 +150,37 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       val funLimit = fibonacci(i)
       val cntLimit = i
 
-      def inlineT(tree: Tree)(using s: State): Tree = ??? // create a stream of trees, the nth tree is the result of inlining functions of size <= fibonacci(n)
+      def inlineT(tree: Tree)(using s: State): Tree = // create a stream of trees, the nth tree is the result of inlining functions of size <= fibonacci(n)
+        tree match {
+          case LetC(cnts: Seq[Cnt], body: Body) => {
+            val _cnts = cnts.filter((cnt: Cnt) => size(cnt.body) <= cntLimit)
+            inlineT(body)(using s.withCnts(_cnts))
+          }
+          case AppC(cnt: Name, args: Seq[Atom]) => {
+            if (s.hasCnt(cnt, args))
+              s.cEnv(cnt) match
+                case Cnt(c, as, e) =>
+                  copyT(e, subst(as, args), emptySubst[Name])
+            else   // Even though an inner `AppC` must correpsond to an outer
+              tree // `LetC`, `cEnv` may still not contain `cnt` due to size
+          }        // limit.
+          case LetF(funs: Seq[Fun], body: Body) => {
+            val _funs = funs.filter((fun: Fun) => size(fun.body) <= funLimit)
+            inlineT(body)(using s.withFuns(_funs))
+          }
+          case AppF(fun: Atom, retC: Name, args: Seq[Atom]) => {
+            if (s.hasFun(fun.asInstanceOf[Name], args))
+              s.fEnv(fun.asInstanceOf[Name]) match
+                case Fun(f, c, as, e) =>
+                  copyT(e, subst(as, args), subst(c, retC))
+            else   // Even though an inner `AppF` must correpsond to an outer
+              tree // `LetF`, `fEnv` may still not contain `fun` due to size
+          }        // limit.
+          case LetP(name, prim, args, body) =>
+            LetP(name, prim, args, inlineT(body))
+          // `If` and `Halt`
+          case t: Tree => t
+        }
 
       (i + 1, fixedPoint(inlineT(tree)(using State(census(tree))))(shrink))
     }
@@ -212,6 +274,7 @@ object HighCPSOptimizer extends CPSOptimizer(HighCPSTreeModule)
   private[this] given Conversion[L3Int, Literal] = IntLit.apply
   private[this] given Conversion[Int, Literal] = L3Int.apply
 
+  // TODO: check `FlatCPSOptimizer` for populating values below
   protected val impure: ValuePrimitive => Boolean =
     ???
 
