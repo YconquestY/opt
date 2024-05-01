@@ -47,7 +47,20 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     /** Shrinking inlining: verify a function/continuation is applied exactly once */
     def appliedOnce(s: Name): Boolean =
       census.get(s).contains(Count(applied = 1))
-
+    /** Determine whether to inline a function/continuation application
+      * 
+      * We need to verify parameters and arguments match in that the input
+      * L₃ programs can be incorrect (see 
+      * https://edstem.org/eu/courses/1102/discussion/102705?answer=194371),
+      * and they can be wrong during grading
+      * (see https://edstem.org/eu/courses/1102/discussion/102705?comment=194427).
+      * 
+      * @param x function/continuation name
+      * @param actualArgs arguments passed to the function/continuation
+      *      application
+      * @return if a function/continuation is to be inlined AND the number of
+      *      parameters and arguments matches
+      */
     def hasFun(fun: Name, actualArgs: Seq[Atom]): Boolean =  // to check if inlining is possible
       fEnv.get(fun).exists(_.args.length == actualArgs.length)
     def hasCnt(cnt: Name, actualArgs: Seq[Atom]): Boolean =
