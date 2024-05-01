@@ -16,7 +16,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     val maxSize = size(simplifiedTree) * 3 / 2
     fixedPoint(simplifiedTree, 8)(`inline`(_, maxSize)) // use backticks to `inline` method instead of keyword
   }
-  /** ???
+  /** count
     * 
     * For example, shrinking inlining requires 1 `applied` and 0 `asValue`.
     * 
@@ -24,7 +24,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     * @param asValue how many times a name is used as a value
     */
   private case class Count(applied: Int = 0, asValue: Int = 0)
-  /** ???
+  /** state
     *
     * @param census  how many times a name is used, for DCE and shrinking inline, is calculated at the start of the shrink phase
     * @param aSubst  record of `Atom` substitutions, for eta reduction, constant folding, common subexpression elimination, absorbing elements, and shrinking inline ?
@@ -97,20 +97,62 @@ abstract class CPSOptimizer[T <: SymbolicNames]
 
   // called recursively
   private def shrink(tree: Tree, s: State): Tree = tree match { // a single pattern match, don't modularize
-    // CSE
-    // commutative operations: +, *, &, |, and ^
-    // +
-    case LetP(name: Name, L3ValuePrimitive.IntAdd | , args: Seq[Name], body: Tree) = 
-      s.eInvEnv(L3.ValuePrimitive, args)
-    // side effect
-    // byte-read
-    // byte-write
 
-    // -
-    // ÷
-    // %
-    // <<
-    // >>
+    case LetF(funs: Seq[Fun], body: Tree) => 
+      var s_ = s
+      val funs_ = funs.filter ( f =>
+        if (s_.dead(f.name)) // DCE
+          false
+        else f.body match { // eta reduction
+          case AppF(n: Name, f.retC, f.args) => // pattern match on value ???
+            s_ = s_.withASubst(f.name, s_.aSubst.getOrElse(n, n))
+            false
+          case _ => true
+        }
+      )
+
+      val funs__ = funs_ map (f =>  // shrink the body of the function
+        Fun(f.name, f.retC, f.args, shrink(f.body, s_))
+      )
+      LetF(funs__, shrink(body, s_))
+
+    case LetC(cnts: Seq[Cnt], body: Tree) =>
+      var s_ = s_
+      val cnts_ = cnts.filter(c =>
+        if (s_.dead(c.name)) // DCE
+          false
+        else c.body match { // eta reduction
+          case AppC(n: Name, c.args) => // pattern match on value ???
+            s_ = s_.withCSubst(c.name, s_.cSubst.getOrElse(n, n))
+            false
+          case _ => true
+        }
+      )
+
+      val cnts__ = cnts_ map (c =>  // shrink the body of the continuation
+        Cnt(c.name, c.args, shrink(c.body, s_))
+      )
+      LetC(cnts__, shrink(body, s_))
+
+
+  
+
+    case LetP(name: Name, prim: ValuePrimitive, args: Seq[Atom], body: Tree) =>
+      if s.dead(name) // DCE
+        shrink(body, s)
+      else if vEvaluator.isDefinedAt((prim, args))
+        shrink(body, s.withASubst(name, vEvaluator((prim, args))))
+      else if leftNeutral.contains((args(0), prim)) || rightNeutral.contains((prim, args(1)))
+        ???
+      else if !(impure(prim) || unstable(prim)) && s.eInvEnv.contains((prim, args)) // CSE
+        shrink(body, s.withASubst(name, s.eInvEnv((prim, args))))
+      else if commutative(prim) // commutative operations: +, *, &, |, and ^
+        LetP(name, prim, args map s.aSubst, shrink(body, s.withExp(name, prim, args).withExp(name, prim, args.reverse)))
+      else if !(impure(prim) || unstable(prim)) // non-commutative and unary operations without side effects
+        LetP(name, prim, args map s.aSubst, shrink(body, s.withExp(name, prim, args)))
+      else // impure or unstable operations
+        LetP(name, prim, args map s.aSubst, shrink(body, s))
+
   }
 
   // (Non-shrinking) inlining
@@ -210,7 +252,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     def incAppUse(atom: Atom): Unit = atom match {
       case n: Name =>
         val currCount = census(n)
-        census(n) = c urrCount.copy(applied = currCount.applied + 1)
+        census(n) = currCount.copy(applied = currCount.applied + 1)
         rhs.remove(n).foreach(addToCensus)
       case _: Literal =>
     }
@@ -275,6 +317,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
                                             Literal]
   protected val cEvaluator: PartialFunction[(TestPrimitive, Seq[Atom]),
                                             Boolean]
+  protected val commutative: ValuePrimitive => Boolean
 }
 
 object HighCPSOptimizer extends CPSOptimizer(HighCPSTreeModule)
@@ -321,16 +364,35 @@ object HighCPSOptimizer extends CPSOptimizer(HighCPSTreeModule)
     case (IntDiv, _) => IntLit(1)
   }
 
-  protected val sameArgReduceC: PartialFunction[TestPrimitive, Boolean] =
+  protected val sameArgReduceC: PartialFunction[TestPrimitive, Boolean] = {
     case IntLe | Eq => BooleanLit(true)
     case IntLt => BooleanLit(false)
   }
 
   protected val vEvaluator: PartialFunction[(ValuePrimitive, Seq[Atom]),
-                                            Literal] = ???
+                                            Literal] = {
+    case (IntAdd, Seq(x: Literal, y: Literal)) => IntLit(x.value + y.value)
+    case (IntSub, Seq(x: Literal, y: Literal)) => IntLit(x.value - y.value)
+    case (IntMul, Seq(x: Literal, y: Literal)) => IntLit(x.value * y.value)
+    case (IntDiv, Seq(x: Literal, y: Literal)) if y.value.toInt != 0 => IntLit(x.value / y.value)
+    case (IntMod, Seq(x: Literal, y: Literal)) if y.value.toInt != 0 => IntLit(x.value % y.value)
+
+    case (IntShiftLeft , Seq(x: Literal, y: Literal)) => IntLit(x.value << y.value)
+    case (IntShiftRight, Seq(x: Literal, y: Literal)) => IntLit(x.value >> y.value)
+    case (IntBitwiseAnd, Seq(x: Literal, y: Literal)) => IntLit(x.value  & y.value)
+    case (IntBitwiseOr , Seq(x: Literal, y: Literal)) => IntLit(x.value  | y.value)
+    case (IntBitwiseXOr, Seq(x: Literal, y: Literal)) => IntLit(x.value  ^ y.value)
+  }
 
   protected val cEvaluator: PartialFunction[(TestPrimitive, Seq[Atom]),
-                                            Boolean] = ???
+                                            Boolean] = {
+    case (IntLt, Seq(x: Literal, y: Literal)) => x.value <  y.value
+    case (IntLe, Seq(x: Literal, y: Literal)) => x.value <= y.value
+    case (Eq   , Seq(x: Literal, y: Literal)) => x.value == y.value
+  }
+
+  protected val commutative: ValuePrimitive => Boolean = 
+    Set(IntAdd, IntMul, IntBitwiseAnd, IntBitwiseOr, IntBitwiseXOr)
 }
 
 object FlatCPSOptimizer extends CPSOptimizer(FlatCPSTreeModule)
@@ -402,4 +464,7 @@ object FlatCPSOptimizer extends CPSOptimizer(FlatCPSTreeModule)
     case (Le, Seq(x: Literal, y: Literal)) => x <= y
     case (Eq, Seq(x: Literal, y: Literal)) => x == y
   }
+
+  protected val commutative: ValuePrimitive => Boolean =
+    = Set(Add, Mul, And, Or, XOr)
 }
