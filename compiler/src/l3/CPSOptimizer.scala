@@ -26,10 +26,10 @@ abstract class CPSOptimizer[T <: SymbolicNames]
   private case class Count(applied: Int = 0, asValue: Int = 0)
   /** ???
     *
-    * @param census  how many times a name is used
-    * @param aSubst  record of `Atom` substitutions
-    * @param cSubst  record of `Cnt`  substitutions
-    * @param eInvEnv for rewriting, e.g., CSE and absorbing elements
+    * @param census  how many times a name is used, for DCE and shrinking inline, is calculated at the start of the shrink phase
+    * @param aSubst  record of `Atom` substitutions, for eta reduction, constant folding, common subexpression elimination, absorbing elements, and shrinking inline ?
+    * @param cSubst  record of `Cnt`  substitutions, for inlining ?
+    * @param eInvEnv for rewriting, e.g., CSE
     *      Pay attention to commutative operations.
     * @param cEnv for continuation inlining
     * @param fEnv for function inlining
@@ -82,6 +82,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
   private def shrink(tree: Tree): Tree =
     shrink(tree, State(census(tree)))
 
+  // called recursively
   private def shrink(tree: Tree, s: State): Tree = tree match { // a single pattern match, don't modularize
     // CSE
     // commutative operations: +, *, &, |, and ^
@@ -196,7 +197,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
     def incAppUse(atom: Atom): Unit = atom match {
       case n: Name =>
         val currCount = census(n)
-        census(n) = currCount.copy(applied = currCount.applied + 1)
+        census(n) = c urrCount.copy(applied = currCount.applied + 1)
         rhs.remove(n).foreach(addToCensus)
       case _: Literal =>
     }
@@ -276,32 +277,41 @@ object HighCPSOptimizer extends CPSOptimizer(HighCPSTreeModule)
 
   // TODO: check `FlatCPSOptimizer` for populating values below
   protected val impure: ValuePrimitive => Boolean =
-    ???
+    Set(ByteRead, ByteWrite, BlockSet)
 
   protected val unstable: ValuePrimitive => Boolean =
-    ???
+    Set(BlockAlloc, BlockGet, ByteRead)
 
-  protected val blockAlloc: ValuePrimitive = ???
-  protected val blockTag: ValuePrimitive = ???
-  protected val blockLength: ValuePrimitive = ???
+  protected val blockAlloc: ValuePrimitive = BlockAlloc
+  protected val blockTag: ValuePrimitive = BlockTag
+  protected val blockLength: ValuePrimitive = BlockLength
 
-  protected val identity: ValuePrimitive = ???
+  protected val identity: ValuePrimitive = Id
 
   protected val leftNeutral: Set[(Literal, ValuePrimitive)] =
-    ???
+    Set((IntLit(0), IntAdd), (IntLit(1), IntMul), (IntLit(~0), IntBitwiseAnd), (IntLit(0), IntBitwiseOr), (IntLit(0), IntBitwiseXOr))
   protected val rightNeutral: Set[(ValuePrimitive, Literal)] =
-    ???
+    Set((IntAdd, IntLit(0)), (IntSub, IntLit(0)), (IntMul, IntLit(1)), (IntDiv, IntLit(1)),
+        (IntShiftLeft, IntLit(0)), (IntShiftRight, IntLit(0)),
+        (IntBitwiseAnd, IntLit(~0)), (IntBitwiseOr, IntLit(0)), (IntBitwiseXOr, IntLit(0)))
 
   protected val leftAbsorbing: Set[(Literal, ValuePrimitive)] =
-    ???
+    Set((IntLit(0), IntMul), (IntLit(0), IntDiv),
+        (IntLit(0), IntShiftLeft), (IntLit(0), IntShiftRight),
+        (IntLit(0), IntBitwiseAnd), (IntLit(~0), IntBitwiseOr))
   protected val rightAbsorbing: Set[(ValuePrimitive, Literal)] =
-    ???
+    Set((IntMul, IntLit(0)), (IntAnd, IntLit(0)), (IntBitwiseOr, IntLit(~0)))
 
-  protected val sameArgReduce: PartialFunction[(ValuePrimitive, Atom), Atom] =
-    ???
+  protected val sameArgReduce: PartialFunction[(ValuePrimitive, Atom), Atom] = {
+    case (IntBitwiseAnd | IntBitwiseOr, a) => a
+    case (IntSub | IntMod | IntBitwiseXOr, _) => IntLit(0)
+    case (IntDiv, _) => IntLit(1)
+  }
 
   protected val sameArgReduceC: PartialFunction[TestPrimitive, Boolean] =
-    ???
+    case IntLe | Eq => BooleanLit(true)
+    case IntLt => BooleanLit(false)
+  }
 
   protected val vEvaluator: PartialFunction[(ValuePrimitive, Seq[Atom]),
                                             Literal] = ???
@@ -325,7 +335,7 @@ object FlatCPSOptimizer extends CPSOptimizer(FlatCPSTreeModule)
     Set(BlockSet, ByteRead, ByteWrite)
 
   protected val unstable: ValuePrimitive => Boolean =
-    Set(BlockAlloc, BlockGet, ByteRead)
+    Set(BlockAlloc, BlockGet, ByteRead) // why `BlockGet`?
 
   protected val blockAlloc: ValuePrimitive = BlockAlloc
   protected val blockTag: ValuePrimitive = BlockTag
