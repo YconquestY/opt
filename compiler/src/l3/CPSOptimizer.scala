@@ -97,53 +97,57 @@ abstract class CPSOptimizer[T <: SymbolicNames]
 
   // called recursively
   private def shrink(tree: Tree, s: State): Tree = tree match { // a single pattern match, don't modularize
-
     case LetF(funs: Seq[Fun], body: Tree) => 
       var s_ = s
-      val funs_ = funs.filter ( f =>
-        if (s_.dead(f.name)) // DCE
+      val cen: Seq[State] = funs.map(f => census(f.body))
+      val funs_ = funs.filter (f => 
+        if (s.dead(f.name)) // DCE
           false
-        else f.body match { // eta reduction
-          case AppF(n: Name, f.retC, f.args) => // pattern match on value ???
-            s_ = s_.withASubst(f.name, s_.aSubst.getOrElse(n, n))
-            false
-          case _ => true
-        }
+        else if (cen.exists(_.contains(f.name))) // no shrinking inlining
+          true
+        else if (s.appliedOnce(f.name)) // shrinking inlining
+          s_ = s_.withFuns(Seq(Fun(f.name, f.retC, f.args, shrink(f.body, s))))
+          false
+        else
+          true
       )
-
-      val funs__ = funs_ map (f =>  // shrink the body of the function
-        Fun(f.name, f.retC, f.args, shrink(f.body, s_))
+      val funs__ = funs_.map(f => // shrink the body of the function
+        Fun(f.name, f.retC, f.args, shrink(f.body, s))
       )
       LetF(funs__, shrink(body, s_))
-
+    
     case LetC(cnts: Seq[Cnt], body: Tree) =>
-      var s_ = s_
-      val cnts_ = cnts.filter(c =>
-        if (s_.dead(c.name)) // DCE
+      var s_ = s
+      val cen: Seq[State] = cnts.map(c => census(c.body))
+      val cnts_ = cnts.filter(c => 
+        if (s.dead(c.name))
           false
-        else c.body match { // eta reduction
-          case AppC(n: Name, c.args) => // pattern match on value ???
-            s_ = s_.withCSubst(c.name, s_.cSubst.getOrElse(n, n))
-            false
-          case _ => true
-        }
+        else if (cen.exists(_.contains(c.name)))
+          true
+        else if (s.appliedOnce(c.name))
+          s_ = s_.withCnts(Seq(Cnt(c.name, c.args, shrink(c.body, s))))
+          false
+        else
+          true
       )
-
-      val cnts__ = cnts_ map (c =>  // shrink the body of the continuation
-        Cnt(c.name, c.args, shrink(c.body, s_))
+      val cnts__ = cnts_.map(c => // shrink the body of the continuation
+        Cnt(c.name, c.args, shrink(c.body, s))
       )
       LetC(cnts__, shrink(body, s_))
-
-
-  
-
+    
     case LetP(name: Name, prim: ValuePrimitive, args: Seq[Atom], body: Tree) =>
-      if s.dead(name) // DCE
+      if !impure(prim) && s.dead(name) // DCE
         shrink(body, s)
-      else if vEvaluator.isDefinedAt((prim, args))
+      else if vEvaluator.isDefinedAt((prim, args)) // constant folding
         shrink(body, s.withASubst(name, vEvaluator((prim, args))))
-      else if leftNeutral.contains((args(0), prim)) || rightNeutral.contains((prim, args(1)))
-        ???
+      else if leftNeutral.contains((args(0), prim)) // left neutral element
+        shrink(body, s.withASubst(name, s.aSubst(args(1))))
+      else if rightNeutral.contains((prim, args(1))) // right neutral element
+        shrink(body, s.withASubst(name, s.aSubst(args(0))))
+      else if leftAbsorbing.contains((args(0), prim)) // left absorbing element
+        shrink(body, s.withASubst(name, args(0)))
+      else if rightAbsorbing.contains((prim, args(1))) // right absorbing element
+        shrink(body, s.withASubst(name, args(1)))
       else if !(impure(prim) || unstable(prim)) && s.eInvEnv.contains((prim, args)) // CSE
         shrink(body, s.withASubst(name, s.eInvEnv((prim, args))))
       else if commutative(prim) // commutative operations: +, *, &, |, and ^
@@ -152,7 +156,25 @@ abstract class CPSOptimizer[T <: SymbolicNames]
         LetP(name, prim, args map s.aSubst, shrink(body, s.withExp(name, prim, args)))
       else // impure or unstable operations
         LetP(name, prim, args map s.aSubst, shrink(body, s))
-
+    
+    case AppF(fun: Atom, retC: Name, actualArgs: Seq[Atom]) =>
+      /* function as argument of `AppF` and applied in body of `AppF`:
+       * substitute `fun` */
+      if s.hasFun(fun, actualArgs)
+        s.fEnv(s.aSubst(fun).asInstanceOf[Name]) match
+          case Fun(f, c, as, e) =>
+            shrink(e, s.withASubst(as, actualArgs map s.aSubst).withCSubst(c, s.cSubst(retC)))
+      else
+        AppF(s.aSubst(fun), s.cSubst(retC), actualArgs map s.aSubst)
+    
+    case AppC(cnt: Name, args: Seq[Atom]) =>
+      ???
+    
+    case If(cond: TestPrimitive, args: Seq[Atom], thenC: Name, elseC: Name) =>
+      ???
+    
+    case Halt(arg: Atom) =>
+      ???
   }
 
   // (Non-shrinking) inlining
