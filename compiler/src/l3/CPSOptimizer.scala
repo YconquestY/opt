@@ -27,7 +27,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
   /** state
     *
     * @param census  how many times a name is used, for DCE and shrinking inline, is calculated at the start of the shrink phase
-    * @param aSubst  record of `Atom` substitutions, for eta reduction, constant folding, common subexpression elimination, absorbing elements, and shrinking inline ?
+    * @param aSubst  record of `Atom` substitutions, for constant folding, common subexpression elimination, absorbing elements, and shrinking inline ?
     * @param cSubst  record of `Cnt`  substitutions, for inlining
     * @param eInvEnv for rewriting, e.g., CSE
     *      Pay attention to commutative operations.
@@ -144,7 +144,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
         LetC(cnts__, shrink(body, s_))
     // side effect
     case LetP(name: Name, this.byteWrite, Seq(a: Atom), body: Tree) =>
-      LetP(name, byteWrite, Seq(s.aSubst(a)), shrink(body, s))
+      LetP(name, byteWrite, Seq(s.aSubst(a)), shrink(body, s)) 
     // DCE
     case LetP(name: Name, prim: ValuePrimitive, _, body: Tree) 
       if (!impure(prim) && s.dead(name)) =>
@@ -282,8 +282,12 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       def inlineT(tree: Tree)(using s: State): Tree = // create a stream of trees, the nth tree is the result of inlining functions of size <= fibonacci(n)
         tree match {
           case LetC(cnts: Seq[Cnt], body: Body) => {
-            val _cnts = cnts.filter((cnt: Cnt) => size(cnt.body) <= cntLimit)
-            inlineT(body)(using s.withCnts(_cnts))
+            val cnts_ = cnts.map {
+              case Cnt(c, as, e) =>
+                Cnt(c, as, inlineT(e))
+            }
+            val _cnts = cnts_.filter((c: Cnt) => size(c.body) <= cntLimit)
+            LetC(cnts_, inlineT(body)(using s.withCnts(_cnts)))
           }
           case AppC(cnt: Name, args: Seq[Atom]) => {
             if (s.hasCnt(cnt, args))
@@ -294,8 +298,12 @@ abstract class CPSOptimizer[T <: SymbolicNames]
               tree // `LetC`, `cEnv` may still not contain `cnt` due to size
           }        // limit.
           case LetF(funs: Seq[Fun], body: Body) => {
-            val _funs = funs.filter((fun: Fun) => size(fun.body) <= funLimit)
-            inlineT(body)(using s.withFuns(_funs))
+            val funs_ = funs.map {
+              case Fun(f, c, as, e) =>
+                Fun(f, c, as, inlineT(e))
+            }
+            val _funs = funs_.filter((f: Fun) => size(f.body) <= funLimit)
+            LetF(funs_, inlineT(body)(using s.withFuns(_funs)))
           }
           case AppF(fun: Atom, retC: Name, args: Seq[Atom]) => {
             if (s.hasFun(fun.asInstanceOf[Name], args))

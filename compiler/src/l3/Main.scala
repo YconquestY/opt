@@ -8,15 +8,15 @@ import l3.SymbolicCL3TreeModule.Tree
 
 object Main {
   def main(args: Array[String]): Unit = {
+    val stats = new Statistics()
     val backEnd: Tree => TerminalPhaseResult = (
       CL3ToCPSTranslator
         andThen HighCPSOptimizer
         andThen CPSValueRepresenter
         andThen CPSHoister
-        andThen treePrinter("------------------after hoisting------------------")
         andThen FlatCPSOptimizer
-        andThen treePrinter("------------------after optimization------------------")
-        andThen FlatCPSInterpreter
+        //andThen FlatCPSInterpreter()
+        andThen (new FlatCPSInterpreter(stats.log))
     )
 
     val basePath = Path.of(System.getProperty("user.dir"))
@@ -27,6 +27,7 @@ object Main {
       .flatMap(backEnd) match {
         case Right((retCode, maybeMsg)) =>
           maybeMsg foreach println
+          println(stats) // statistics
           sys.exit(retCode)
         case Left(errMsg) =>
           println(s"Error: $errMsg")
