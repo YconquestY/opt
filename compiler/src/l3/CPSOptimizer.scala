@@ -114,7 +114,11 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       val funs__ = funs_.map(f => // shrink the body of the function
         Fun(f.name, f.retC, f.args, shrink(f.body, s))
       )
-      LetF(funs__, shrink(body, s_))
+
+      if (funs__.isEmpty)
+        shrink(body, s_)
+      else
+        LetF(funs__, shrink(body, s_))
     
     case LetC(cnts: Seq[Cnt], body: Tree) =>
       var s_ = s
@@ -124,7 +128,7 @@ abstract class CPSOptimizer[T <: SymbolicNames]
           false
         else if (cen.exists(_.contains(c.name)))
           true
-        else if (s.appliedOnce(c.name))
+        else if (s.appliedOnce(c.name)) // shrinking inlining
           s_ = s_.withCnts(Seq(Cnt(c.name, c.args, shrink(c.body, s))))
           false
         else
@@ -133,7 +137,11 @@ abstract class CPSOptimizer[T <: SymbolicNames]
       val cnts__ = cnts_.map(c => // shrink the body of the continuation
         Cnt(c.name, c.args, shrink(c.body, s))
       )
-      LetC(cnts__, shrink(body, s_))
+
+      if (cnts__.isEmpty)
+        shrink(body, s_)
+      else
+        LetC(cnts__, shrink(body, s_))
     // side effect
     case LetP(name: Name, this.byteWrite, Seq(a: Atom), body: Tree) =>
       LetP(name, byteWrite, Seq(s.aSubst(a)), shrink(body, s))
